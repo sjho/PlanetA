@@ -1,0 +1,5 @@
+.git/*
+.idea/*
+venv/*
+/problem_2/2.극지_데이터.zip
+/problem_2/data/
