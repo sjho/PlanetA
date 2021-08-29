@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from sklearn.svm import NuSVC, SVC
+from sklearn.svm import NuSVC, SVC, SVR
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
@@ -99,10 +99,42 @@ imputed_X['ph'] = imputed_X['MGO(WT%)'] > 7
 X_test['ph'] = X_test['MGO(WT%)'] > 7
 '''
 
-model = SVC(C=2584.95)
-#model = NuSVC(nu=i)
-model.fit(imputed_X_train, y_train)
-preds = model.predict(imputed_X_valid)
+# model = SVC(C=2584.95)
+# #model = NuSVC(nu=i)
+# model.fit(imputed_X_train, y_train)
+# preds = model.predict(imputed_X_valid)
+# error = mean_absolute_error(preds, y_valid)
+# print(error)
+
+preds = None
+C_list = []
+
+print('validation')
+for i in np.arange(2600, 2800, 100):
+    model = SVR(C=i)
+    #model = NuSVC(nu=i)
+    model.fit(imputed_X_train, y_train)
+
+    local_preds = model.predict(imputed_X_valid)
+    local_preds_k = local_preds
+    local_preds[local_preds_k > 0.5] = 1
+    local_preds[~(local_preds_k > 0.5)] = 0
+    error = mean_absolute_error(local_preds, y_valid)
+
+    if error < 0.03:
+        if preds is None:
+            preds = local_preds
+            C_list.append(i)
+        else:
+            preds += local_preds
+            C_list.append(i)
+    print(i, error)
+
+preds_k = preds / len(C_list)
+preds[preds_k > 0.5] = 1
+preds[~(preds_k > 0.5)] = 0
+print(preds)
+
 error = mean_absolute_error(preds, y_valid)
 print(error)
 
@@ -110,10 +142,31 @@ print(error)
 최종 모델 예측 및 출력
 '''
 
-model = SVC(C=2584.95)
-#model = NuSVC(nu=0.06956)
-model.fit(imputed_X, y)
-preds = model.predict(X_test)
+# model = SVC(C=2584.95)
+# #model = NuSVC(nu=0.06956)
+# model.fit(imputed_X, y)
+# preds = model.predict(X_test)
+#
+# test_y = pd.DataFrame(preds, columns=['Thickness'])
+# test_y.to_csv("test_output.csv", index=False)
+
+preds = None
+
+print('train and test')
+for i in C_list:
+    print(i)
+    model = SVR(C=i)
+    #model = NuSVC(nu=0.06956)
+    model.fit(imputed_X, y)
+    if preds is None:
+        preds = model.predict(X_test)
+    else:
+        preds += model.predict(X_test)
+
+preds_k = preds / len(C_list)
+preds[preds_k > 0.5] = 1
+preds[~(preds_k > 0.5)] = 0
+print(preds)
 
 test_y = pd.DataFrame(preds, columns=['Thickness'])
 test_y.to_csv("test_output.csv", index=False)

@@ -138,9 +138,8 @@ train_trv_time['sea'] = train_sea
 # X_train = train_trv_time
 # y_train = y_train
 
-
-X_train = torch.FloatTensor(train_trv_time.values)
-y_train = torch.FloatTensor(y_train.values) / MAX_TEMP
+X = torch.FloatTensor(train_trv_time.values)
+y = torch.FloatTensor(y_train.values) / MAX_TEMP
 
 print(torch.cuda.is_available())
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -150,41 +149,139 @@ if device == 'cuda':
 
 print(device)
 
-model = nn.Sequential(
-    nn.Linear(4, 200),
-    nn.LeakyReLU(),
-    nn.BatchNorm1d(200),
-    nn.Dropout(0.5),
-    nn.Linear(200, 151),
-    nn.Sigmoid()
-).to(device)
-
-optimizer = optim.Adam(model.parameters(), lr=1e-2)
-
-best_model = None
-best_rmse = 1000
+whole_models = []
+whole_history = []
+rmses = []
 
 nb_epochs = 30000
-for epoch in range(nb_epochs + 1):
-    model.train()
 
-    optimizer.zero_grad()
-    hypothesis = model(X_train.to(device))
-    loss = F.binary_cross_entropy(hypothesis, y_train.to(device))
-    loss.backward()
-    optimizer.step()
+layer_nums = list(range(1, 10, 1))+list(range(10, 201, 10))
 
-    with torch.no_grad():
-        rmse = torch.sqrt(torch.sum(torch.pow(hypothesis * MAX_TEMP - y_train.to(device) * MAX_TEMP, 2)) / (num_of_train * len(y_cols)))
-        if rmse < best_rmse:
-            best_rmse = rmse
-            best_model = model
+for hidden in layer_nums:
+    # best_model = None
+    best_rmse = 1000
+    # best_hidden = 0
+    # best_epochs = 0
 
+    # hidden = 200
+    # hidden2 = 200
+    dropout_ratio = 0.5
 
-        if epoch % 100 == 0:
-            print('Epoch {:4d}/{} : RMSE {:0.10f}'.format(
-                epoch, nb_epochs, rmse,
-            ))
+    models = []
+    history = []
+
+    print("Num of hidden layer :", hidden)
+
+    # optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    num_of_k = 3
+
+    # K - fold validation
+    for k in range(num_of_k):
+        # if best_model is not None:
+        #    model = best_model
+        #    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+        model = nn.Sequential(
+            nn.Linear(4, hidden),
+            nn.BatchNorm1d(hidden),
+            nn.Dropout(dropout_ratio),
+            nn.LeakyReLU(),
+            nn.Linear(hidden, 151),
+            nn.Sigmoid(),
+        ).to(device)
+
+        optimizer = optim.Adam(model.parameters(), lr=1e-2)
+
+        k_num = max(0, int(num_of_train * k / num_of_k))
+        next_k_num = min(num_of_train, int(num_of_train * (k+1) / num_of_k))
+
+        X_train = None
+        y_train = None
+        X_valid = X[k_num:next_k_num]
+        y_valid = y[k_num:next_k_num]
+
+        if k_num == 0:
+            X_train = X[next_k_num:]
+            y_train = y[next_k_num:]
+        elif next_k_num == num_of_train:
+            X_train = X[:k_num]
+            y_train = y[:k_num]
+        else:
+            X_train = torch.cat((X[:k_num], X[next_k_num:]), dim=0)
+            y_train = torch.cat((y[:k_num], y[next_k_num:]), dim=0)
+
+        best_model_h = None
+        recent_model = None
+        best_rmse_h = 1000
+        recent_rmse = None
+
+        for epoch in range(nb_epochs + 1):
+            model.train()
+
+            optimizer.zero_grad()
+            hypothesis = model(X_train.to(device))
+            loss = F.binary_cross_entropy(hypothesis, y_train.to(device))
+            loss.backward()
+            optimizer.step()
+
+            recent_model = model
+
+            with torch.no_grad():
+                model.eval()
+                predict = model(X_valid.to(device))
+                #rmse = torch.sqrt(torch.sum(torch.pow(hypothesis * MAX_TEMP - y_train.to(device) * MAX_TEMP, 2)) / (num_of_train * len(y_cols)))
+                rmse = torch.sqrt(
+                    torch.sum(
+                        torch.pow(
+                            predict * MAX_TEMP - y_valid.to(device) * MAX_TEMP, 2)) /
+                                (int(num_of_train * (1 / num_of_k)) * len(y_cols)))
+                recent_rmse = rmse
+
+                if rmse < best_rmse_h:
+                #if epoch >= nb_epochs-100:
+                    best_rmse_h = rmse
+                    best_model_h = model
+
+                if rmse < best_rmse:
+                    best_rmse = rmse
+                    # best_model = model
+                    best_hidden = hidden
+                    best_epochs = epoch
+
+                if epoch % 100 == 0:
+                    print('{}/{} Epoch {:4d}/{} : RMSE {:0.10f}, LOCAL BEST {:0.10f}, BEST {:0.10f}'.format(
+                        k+1, num_of_k, epoch, nb_epochs, rmse, best_rmse_h, best_rmse
+                    ))
+
+        # models.append(best_model_h)
+        # history.append(float(best_rmse_h))
+        models.append(recent_model)
+        history.append(float(recent_rmse))
+
+    rmses.append(sum(history) / len(history))
+    whole_models.append(models)
+    whole_history.append(history)
+
+print(rmses)
+print("Best :", np.argmin(rmses), ",", min(rmses))
+
+# history.append([hidden, float(best_rmse_h)])
+
+# print(history)
+# print("Best num of hidden layers :", best_hidden, ":", best_epochs, "epochs", "-", float(best_rmse))
+
+# argmin = np.argmin(history)
+#
+# del history[argmin]
+# del models[argmin]
+#
+# argmax = np.argmax(history)
+#
+# del history[argmax]
+# del models[argmax]
+
+# print(sum(history)/len(history))
 
 '''
 최종 모델 예측 및 출력
@@ -311,10 +408,21 @@ test_trv_time['wind_v'] = test_wind_v
 test_trv_time['sea'] = test_sea
 
 with torch.no_grad():
-    model.eval()
     X_test = torch.FloatTensor(test_trv_time.values)
+    # rmse_sum = sum(history)
+    for i in range(len(whole_models)):
+        pred = None
+        for m, h in zip(whole_models[i], whole_history[i]):
+            if pred is None:
+                # pred = m(X_test.to(device)).cpu().detach().numpy() * h / rmse_sum
+                pred = m(X_test.to(device)).cpu().detach().numpy() / len(whole_history[i])
+            else:
+                # pred += m(X_test.to(device)).cpu().detach().numpy() * h / rmse_sum
+                pred += m(X_test.to(device)).cpu().detach().numpy() / len(whole_history[i])
+        pred *= MAX_TEMP
 
-    y_test = pd.DataFrame(best_model(X_test.to(device)).cpu().detach().numpy()*MAX_TEMP, columns=y_cols)
-    y_test.to_csv("test_output.csv", index=False)
+        y_test = pd.DataFrame(pred, columns=y_cols)
+        y_test.to_csv("output/test_output_{}.csv".format(layer_nums[i]), index=False)
+        # y_test.to_csv("test_output.csv", index=False)
 
 
