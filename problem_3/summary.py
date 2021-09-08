@@ -3,10 +3,13 @@ import pandas as pd
 
 result = None
 
-layers = list(range(1, 10, 1))+list(range(10, 201, 10))
+#layers = [8, 9, 10, 10, 20, 40, 50, 60, 70]
+layers = [10, 10, 20, 40, 50, 60, 70]
 columns = None
-for layer in layers:
-    temp = pd.read_csv("output/test_output_{}.csv".format(layer))
+
+for i, layer in enumerate(layers):
+#    temp = pd.read_csv("output_PReLU/test_output_{}.csv".format(layer))
+    temp = pd.read_csv("output_0902/test_output_{}.csv".format(layer))
     columns = temp.columns
     if result is None:
         result = temp.to_numpy()
@@ -14,5 +17,6 @@ for layer in layers:
         result += temp.to_numpy()
 
 result /= len(layers)
+
 result = pd.DataFrame(result, columns=columns)
-result.to_csv("test_output_sum.csv", index=None)
+result.to_csv("test_output_sum_2.csv", index=None)

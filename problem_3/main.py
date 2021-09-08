@@ -9,7 +9,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-MAX_TEMP = 100
+from itertools import compress
+
+MAX_TEMP = 1
+
+import random
+
+np.random.seed = 0
+torch.manual_seed(0)
+random.seed(0)
 
 '''
 학습 데이터 불러오기
@@ -108,6 +116,7 @@ for i in range(num_of_train):
     train_wind_v_whole_i = train_wind_v_whole[i]
     train_sea_whole_i = train_sea_whole[i]
 
+
     train_wind_u_i = train_wind_u_whole_i[wind_la_i_1][wind_lo_i_1] * (wind_1_1 / wind_sum_l) + \
                      train_wind_u_whole_i[wind_la_i_1][wind_lo_i_2] * (wind_1_2 / wind_sum_l) + \
                      train_wind_u_whole_i[wind_la_i_2][wind_lo_i_1] * (wind_2_1 / wind_sum_l) + \
@@ -122,6 +131,12 @@ for i in range(num_of_train):
                   train_sea_whole_i[sea_la_i_1][sea_lo_i_2] * (sea_1_2 / sea_sum_l) + \
                   train_sea_whole_i[sea_la_i_2][sea_lo_i_1] * (sea_2_1 / sea_sum_l) + \
                   train_sea_whole_i[sea_la_i_2][sea_lo_i_2] * (sea_2_2 / sea_sum_l)
+    '''
+
+    train_wind_u_i = train_wind_u_whole_i[wind_la_i_1][wind_lo_i_1]
+    train_wind_v_i = train_wind_v_whole_i[wind_la_i_1][wind_lo_i_1]
+    train_sea_i = train_sea_whole_i[sea_la_i_1][sea_lo_i_1]
+    '''
 
     train_wind_u.append(train_wind_u_i)
     train_wind_v.append(train_wind_v_i)
@@ -131,8 +146,22 @@ train_wind_u = np.array(train_wind_u)
 train_wind_v = np.array(train_wind_v)
 train_sea = np.array(train_sea)
 
-train_trv_time['wind_u'] = train_wind_u
-train_trv_time['wind_v'] = train_wind_v
+train_trv_time -= 1.97
+train_trv_time *= 100
+train_trv_time = np.exp(train_trv_time**2)
+# train_trv_time -= 1.97
+# train_trv_time = np.abs(np.log(train_trv_time))
+#
+
+train_sea = np.exp(train_sea**2)
+
+print(np.min(train_trv_time.values), np.max(train_trv_time.values))
+print(np.min(train_wind_u), np.max(train_wind_u))
+print(np.min(train_wind_v), np.max(train_wind_v))
+print(np.min(train_sea), np.max(train_sea))
+
+train_trv_time['rho'] = np.sqrt(train_wind_u ** 2 + train_wind_v ** 2)
+train_trv_time['phi'] = np.arctan2(train_wind_v, train_wind_u)
 train_trv_time['sea'] = train_sea
 
 # X_train = train_trv_time
@@ -153,11 +182,118 @@ whole_models = []
 whole_history = []
 rmses = []
 
-nb_epochs = 30000
+nb_epochs = 3000
 
-layer_nums = list(range(1, 10, 1))+list(range(10, 201, 10))
+# layer_nums = list(range(10, 101, 10))# +list(range(100, 201, 10))
+layer_nums = [200]
+real_layer_nums = []
+
+class Prob3Model(nn.Module):
+    def __init__(self, h, d):
+        super().__init__()
+        self.linear_trv = nn.Linear(1, 4).to(device)
+        self.batch_norm_trv = nn.BatchNorm1d(1).to(device)
+        self.dropout_trv = nn.Dropout(d).to(device)
+        self.leakyrelu_trv = nn.PReLU().to(device)
+        self.sigmoid_trv = nn.Sigmoid().to(device)
+
+        self.linear_wind_1 = nn.Linear(2, 4).to(device)
+        self.batch_norm_wind_1 = nn.BatchNorm1d(1).to(device)
+        self.dropout_wind_1 = nn.Dropout(d).to(device)
+        self.leakyrelu_wind_1 = nn.PReLU().to(device)
+        self.sigmoid_wind_1 = nn.Sigmoid().to(device)
+
+        self.linear_wind_2 = nn.Linear(2, 4).to(device)
+        self.batch_norm_wind_2 = nn.BatchNorm1d(1).to(device)
+        self.dropout_wind_2 = nn.Dropout(d).to(device)
+        self.leakyrelu_wind_2 = nn.PReLU().to(device)
+        self.sigmoid_wind_2 = nn.Sigmoid().to(device)
+
+        self.linear_sea = nn.Linear(1, 4).to(device)
+        self.batch_norm_sea = nn.BatchNorm1d(1).to(device)
+        self.dropout_sea = nn.Dropout(d).to(device)
+        self.leakyrelu_sea = nn.PReLU().to(device)
+        self.sigmoid_sea = nn.Sigmoid().to(device)
+
+        self.linear_1 = nn.Linear(4, 1).to(device)
+        self.linear_2 = nn.Linear(4, 1).to(device)
+        self.linear_3 = nn.Linear(4, 1).to(device)
+        self.linear_4 = nn.Linear(4, 1).to(device)
+
+        self.lin_upsamp = nn.Sequential(
+            # 1, 4
+            nn.Conv1d(1, 8, 1), nn.ReLU(),
+            nn.Conv1d(8, 8, 1), nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+
+            # 8, 8
+            nn.Conv1d(8, 16, 1), nn.ReLU(),
+            nn.Conv1d(16, 16, 1), nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+
+            # 16, 16
+            nn.Conv1d(16, 32, 1), nn.ReLU(),
+            nn.Conv1d(32, 32, 1), nn.ReLU(),
+            nn.MaxPool1d(2, 2),
+
+            # 32, 8
+            nn.Conv1d(32, 64, 1), nn.ReLU(),
+            nn.Conv1d(64, 64, 1), nn.ReLU(),
+            nn.MaxPool1d(2, 2),
+
+            # 64, 4
+            nn.Conv1d(64, 128, 1), nn.ReLU(),
+            nn.Conv1d(128, 128, 1), nn.ReLU(),
+            nn.MaxPool1d(2, 2),
+
+            # 128, 2
+            nn.Conv1d(128, 256, 1), nn.ReLU(),
+            nn.Conv1d(256, 256, 1), nn.ReLU(),
+            nn.MaxPool1d(2, 2),
+
+            # 256, 1
+        ).to(device)
+        
+        self.final = nn.Linear(256, 151).to(device)
+
+    def forward(self, x):
+        x1 = x[:, :1]
+        x2 = x[:, 1:3]
+        x3 = x[:, 1:3]
+        x4 = x[:, 3:]
+
+        x1 = self.linear_trv(x1)
+        x1 = self.leakyrelu_trv(x1)
+
+        x2 = self.linear_wind_1(x2)
+        x2 = self.leakyrelu_wind_1(x2)
+
+        x3 = self.linear_wind_2(x3)
+        x3 = self.leakyrelu_wind_2(x3)
+
+        x4 = self.linear_sea(x4)
+        x4 = self.leakyrelu_sea(x4)
+
+        x = x1 + x2 + x3 + x4
+        x = torch.cat((self.linear_1(x), self.linear_2(x), self.linear_3(x), self.linear_4(x)), dim=1)
+        x = torch.reshape(x, (x.shape[0], 1, -1))
+        x = self.lin_upsamp(x)
+        x = torch.reshape(x, (x.shape[0], -1))
+
+        return self.final(x)
+
+class RMSELoss(torch.nn.Module):
+    def __init__(self):
+        super(RMSELoss, self).__init__()
+    def forward(self, x, y):
+        criterion = nn.MSELoss()
+        loss = torch.sqrt(criterion(x, y))
+        return loss
 
 for hidden in layer_nums:
+    # if os.path.isfile("output_ELU/test_output_{}.csv".format(hidden)):
+    #     continue
+    real_layer_nums.append(hidden)
     # best_model = None
     best_rmse = 1000
     # best_hidden = 0
@@ -182,15 +318,17 @@ for hidden in layer_nums:
         #    model = best_model
         #    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-        model = nn.Sequential(
-            nn.Linear(4, hidden),
-            nn.BatchNorm1d(hidden),
-            nn.Dropout(dropout_ratio),
-            nn.LeakyReLU(),
-            nn.Linear(hidden, 151),
-            nn.Sigmoid(),
-        ).to(device)
+        # model = nn.Sequential(
+        #     nn.Linear(4, hidden),
+        #     nn.BatchNorm1d(hidden),
+        #     nn.Dropout(dropout_ratio),
+        #     nn.PReLU(num_parameters=hidden, init=1),
+        #     nn.Linear(hidden, 151)
+        # ).to(device)
 
+        model = Prob3Model(hidden, dropout_ratio)
+
+        criterion = RMSELoss()
         optimizer = optim.Adam(model.parameters(), lr=1e-2)
 
         k_num = max(0, int(num_of_train * k / num_of_k))
@@ -221,7 +359,8 @@ for hidden in layer_nums:
 
             optimizer.zero_grad()
             hypothesis = model(X_train.to(device))
-            loss = F.binary_cross_entropy(hypothesis, y_train.to(device))
+            # loss = F.binary_cross_entropy(hypothesis, y_train.to(device))
+            loss = criterion(hypothesis, y_train.to(device))
             loss.backward()
             optimizer.step()
 
@@ -231,11 +370,13 @@ for hidden in layer_nums:
                 model.eval()
                 predict = model(X_valid.to(device))
                 #rmse = torch.sqrt(torch.sum(torch.pow(hypothesis * MAX_TEMP - y_train.to(device) * MAX_TEMP, 2)) / (num_of_train * len(y_cols)))
-                rmse = torch.sqrt(
-                    torch.sum(
-                        torch.pow(
-                            predict * MAX_TEMP - y_valid.to(device) * MAX_TEMP, 2)) /
-                                (int(num_of_train * (1 / num_of_k)) * len(y_cols)))
+                # rmse = torch.sqrt(
+                #     torch.sum(
+                #         torch.pow(
+                #             predict * MAX_TEMP - y_valid.to(device) * MAX_TEMP, 2)) /
+                #                 (int(num_of_train * (1 / num_of_k)) * len(y_cols)))
+                rmseloss = RMSELoss()
+                rmse = rmseloss(predict, y_valid.to(device))
                 recent_rmse = rmse
 
                 if rmse < best_rmse_h:
@@ -250,14 +391,22 @@ for hidden in layer_nums:
                     best_epochs = epoch
 
                 if epoch % 100 == 0:
-                    print('{}/{} Epoch {:4d}/{} : RMSE {:0.10f}, LOCAL BEST {:0.10f}, BEST {:0.10f}'.format(
-                        k+1, num_of_k, epoch, nb_epochs, rmse, best_rmse_h, best_rmse
-                    ))
+                    print(
+                        '{}/{} Epoch {:4d}/{} : loss {:0.10f}, RMSE {:0.10f}, LOCAL BEST {:0.10f}, BEST {:0.10f}'.format(
+                            k + 1, num_of_k, epoch, nb_epochs, loss, rmse, best_rmse_h, best_rmse
+                        ))
 
-        # models.append(best_model_h)
-        # history.append(float(best_rmse_h))
-        models.append(recent_model)
-        history.append(float(recent_rmse))
+                if epoch > nb_epochs - 1000:
+                    # models.append(best_model_h)
+                    # history.append(float(best_rmse_h))
+                    models.append(recent_model)
+                    history.append(float(recent_rmse))
+
+    history_args = np.argsort(history)
+    history = list(compress(history, (history_args < 200) & (history_args > 5))) + history[
+                                                                                 -200:]  # history[-i:-90] + history[-70:]
+    models = list(compress(models, (history_args < 200) & (history_args > 5))) + models[
+                                                                               -200:]  # models[-i:-90] + models[-70:]
 
     rmses.append(sum(history) / len(history))
     whole_models.append(models)
@@ -380,6 +529,7 @@ for i in range(num_of_test):
     test_wind_v_whole_i = test_wind_v_whole[i]
     test_sea_whole_i = test_sea_whole[i]
 
+
     test_wind_u_i = test_wind_u_whole_i[wind_la_i_1][wind_lo_i_1] * (wind_1_1 / wind_sum_l) + \
                      test_wind_u_whole_i[wind_la_i_1][wind_lo_i_2] * (wind_1_2 / wind_sum_l) + \
                      test_wind_u_whole_i[wind_la_i_2][wind_lo_i_1] * (wind_2_1 / wind_sum_l) + \
@@ -394,6 +544,12 @@ for i in range(num_of_test):
                   test_sea_whole_i[sea_la_i_1][sea_lo_i_2] * (sea_1_2 / sea_sum_l) + \
                   test_sea_whole_i[sea_la_i_2][sea_lo_i_1] * (sea_2_1 / sea_sum_l) + \
                   test_sea_whole_i[sea_la_i_2][sea_lo_i_2] * (sea_2_2 / sea_sum_l)
+    '''
+    
+    test_wind_u_i = test_wind_u_whole_i[wind_la_i_1][wind_lo_i_1]
+    test_wind_v_i = test_wind_v_whole_i[wind_la_i_1][wind_lo_i_1]
+    test_sea_i = test_sea_whole_i[sea_la_i_1][sea_lo_i_1]
+    '''
 
     test_wind_u.append(test_wind_u_i)
     test_wind_v.append(test_wind_v_i)
@@ -403,8 +559,22 @@ test_wind_u = np.array(test_wind_u)
 test_wind_v = np.array(test_wind_v)
 test_sea = np.array(test_sea)
 
-test_trv_time['wind_u'] = test_wind_u
-test_trv_time['wind_v'] = test_wind_v
+test_trv_time -= 1.97
+test_trv_time *= 100
+test_trv_time = np.exp(test_trv_time**2)
+# test_trv_time -= 1.97
+# test_trv_time = np.abs(np.log(test_trv_time))
+#
+
+test_sea = np.exp(test_sea**2)
+
+print(np.min(test_trv_time.values), np.max(test_trv_time.values))
+print(np.min(test_wind_u), np.max(test_wind_u))
+print(np.min(test_wind_v), np.max(test_wind_v))
+print(np.min(test_sea), np.max(test_sea))
+
+test_trv_time['rho'] = np.sqrt(test_wind_u ** 2 + test_wind_v ** 2)
+test_trv_time['phi'] = np.arctan2(test_wind_v, test_wind_u)
 test_trv_time['sea'] = test_sea
 
 with torch.no_grad():
@@ -422,7 +592,7 @@ with torch.no_grad():
         pred *= MAX_TEMP
 
         y_test = pd.DataFrame(pred, columns=y_cols)
-        y_test.to_csv("output/test_output_{}.csv".format(layer_nums[i]), index=False)
+        y_test.to_csv("output_0906/test_output_{}.csv".format(real_layer_nums[i]), index=False)
         # y_test.to_csv("test_output.csv", index=False)
 
 
